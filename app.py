@@ -71,6 +71,7 @@ st.markdown("""
     .badge-strong   { display:inline-block; background:#e8f5e9; color:#2e7d32; padding:3px 12px; border-radius:20px; font-size:0.72rem; font-weight:700; }
     .badge-moderate { display:inline-block; background:#fff8e1; color:#f57f17; padding:3px 12px; border-radius:20px; font-size:0.72rem; font-weight:700; }
     .badge-weak     { display:inline-block; background:#ffebee; color:#c62828; padding:3px 12px; border-radius:20px; font-size:0.72rem; font-weight:700; }
+    .badge-na       { display:inline-block; background:#f5f5f5; color:#9e9e9e; padding:3px 12px; border-radius:20px; font-size:0.72rem; font-weight:700; }
 
     /* Analyst notes box */
     .notes-box {
@@ -124,7 +125,7 @@ def render_verdict_banner(verdict, strong, total):
 
 
 def render_metric_card(label, value, flag):
-    badge_class = f"badge-{flag.lower()}"
+    badge_class = f"badge-{flag.lower().replace('/', '')}"  # "N/A" → "badge-na"
     return f"""
     <div class="metric-card">
         <div class="metric-label">{label}</div>
@@ -311,11 +312,16 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
     total   = len(flags)
     verdict = "STRONG" if strong >= 5 else "MODERATE" if strong >= 3 else "WEAK"
 
+    data_as_of = df.index[0]   # the most recent fiscal year-end date, e.g. "2024-09-30"
+
     st.markdown(f"""
     <div style="margin-top:8px;">
         <h2 style="color:#1a237e; font-size:1.5rem; font-weight:800; margin-bottom:4px;">
             {company_name} &nbsp;<span style="color:#888; font-weight:400; font-size:1rem;">({ticker})</span>
         </h2>
+        <p style="color:#9e9e9e; font-size:0.8rem; margin:2px 0 0 0;">
+            &#128197; Data as of {data_as_of} &nbsp;·&nbsp; Most recent 5 annual filings from SEC EDGAR
+        </p>
     </div>
     """, unsafe_allow_html=True)
 

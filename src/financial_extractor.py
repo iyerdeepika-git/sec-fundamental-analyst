@@ -76,7 +76,15 @@ def get_annual_values(facts_data, gaap_fields, unit="USD"):
     Tries each field name in gaap_fields until it finds one with data.
 
     Returns a dictionary like: {"2024-09-30": 35926000000, "2023-09-30": ...}
+
+    Improvements over v1:
+    - Accepts 10-K/A (amended annual reports) — these contain corrected numbers
+    - Filters stub periods (short filings when a company shifts its fiscal year-end)
+    - When the same fiscal year-end appears in multiple filings, keeps the most
+      recently filed value (the most accurate, up-to-date version)
     """
+    from datetime import date as _date
+
     for field in gaap_fields:
         try:
             entries = facts_data["facts"]["us-gaap"][field]["units"][unit]
@@ -84,12 +92,41 @@ def get_annual_values(facts_data, gaap_fields, unit="USD"):
             # This field name doesn't exist for this company — try the next one
             continue
 
-        result = {}
-        for entry in entries:
-            # Only keep annual 10-K entries, not quarterly 10-Q
-            if entry.get("form") == "10-K" and "end" in entry:
-                result[entry["end"]] = entry["val"]
+        # best[end_date] = the single best entry for that fiscal year-end.
+        # Think of it like a leaderboard: for any given year-end date,
+        # only the most recently FILED version earns a slot.
+        best = {}
 
+        for entry in entries:
+            # Accept both 10-K (original annual) and 10-K/A (amended annual).
+            # Previously we only accepted "10-K" — this is what caused missing data.
+            if entry.get("form") not in ("10-K", "10-K/A"):
+                continue
+            if "end" not in entry:
+                continue
+
+            # Stub-period filter: if a "start" date is present, the filing must
+            # cover at least 300 days to count as a full fiscal year.
+            # This removes transition filings like a 3-month stub year.
+            if "start" in entry:
+                try:
+                    start_dt = _date.fromisoformat(entry["start"])
+                    end_dt   = _date.fromisoformat(entry["end"])
+                    if (end_dt - start_dt).days < 300:
+                        continue
+                except ValueError:
+                    pass  # If dates can't be parsed, keep the entry anyway
+
+            end_key = entry["end"]               # e.g. "2024-09-30"
+            filed   = entry.get("filed", "")     # e.g. "2024-11-14"
+
+            # For the same fiscal year-end, keep whichever entry was filed most recently.
+            # String comparison works here because dates are in YYYY-MM-DD format —
+            # alphabetical order is the same as chronological order for that format.
+            if end_key not in best or filed > best[end_key].get("filed", ""):
+                best[end_key] = entry
+
+        result = {end: e["val"] for end, e in best.items()}
         if result:
             # Found real data — no need to try the remaining field names
             return result

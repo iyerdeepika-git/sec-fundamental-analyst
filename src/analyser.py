@@ -2,6 +2,9 @@
 # Job: calculate financial ratios from raw data and flag the company as
 # Strong, Moderate, or Weak on each metric — like a quantitative screen.
 
+import math
+import pandas as pd
+
 # ── THRESHOLDS ──────────────────────────────────────────────────────────────
 # These are the cut-off values that decide each flag.
 # Think of them as the "rules of thumb" an analyst uses when screening stocks.
@@ -20,6 +23,13 @@ THRESHOLDS = {
 }
 
 
+def _safe_div(numerator, denominator):
+    """Divide two numbers. Returns NaN if either is missing or denominator is zero."""
+    if pd.isna(numerator) or pd.isna(denominator) or denominator == 0:
+        return float("nan")
+    return numerator / denominator
+
+
 def calculate_ratios(df):
     """
     Calculate all six financial ratios from the raw DataFrame.
@@ -28,31 +38,31 @@ def calculate_ratios(df):
     df.iloc[1] means "give me row 1" — the previous year, needed for growth calculations.
     Think of iloc as pointing to a row by its position number, like Excel row 2 and row 3.
     """
-    latest = df.iloc[0]   # most recent fiscal year
-    prev   = df.iloc[1]   # one year earlier
+    latest = df.iloc[0]                              # most recent fiscal year
+    prev   = df.iloc[1] if len(df) >= 2 else None   # one year earlier, if available
 
     ratios = {
         # How much operating profit for every $1 of revenue?
-        "operating_margin":  latest["operating_income"] / latest["revenue"],
+        "operating_margin":  _safe_div(latest["operating_income"], latest["revenue"]),
 
         # How much net profit for every $1 of revenue?
-        "net_profit_margin": latest["net_income"] / latest["revenue"],
+        "net_profit_margin": _safe_div(latest["net_income"],       latest["revenue"]),
 
         # How fast is revenue growing year over year?
         # Formula: (this year - last year) / last year
-        "revenue_growth":    (latest["revenue"] - prev["revenue"]) / prev["revenue"],
+        "revenue_growth": (
+            _safe_div(latest["revenue"] - prev["revenue"], prev["revenue"])
+            if prev is not None else float("nan")
+        ),
 
         # How much debt relative to shareholder equity?
-        # Like asking: for every $1 of equity, how much has been borrowed?
-        "debt_to_equity":    latest["long_term_debt"] / latest["equity"],
+        "debt_to_equity":    _safe_div(latest["long_term_debt"],        latest["equity"]),
 
         # Can the company cover its short-term bills with short-term assets?
-        # A ratio above 1.0 means yes. Below 1.0 means potential liquidity risk.
-        "current_ratio":     latest["current_assets"] / latest["current_liabilities"],
+        "current_ratio":     _safe_div(latest["current_assets"], latest["current_liabilities"]),
 
         # How much net income is generated per $1 of shareholder equity?
-        # The higher this is, the harder equity is working for investors.
-        "return_on_equity":  latest["net_income"] / latest["equity"],
+        "return_on_equity":  _safe_div(latest["net_income"],            latest["equity"]),
     }
 
     return ratios
@@ -60,11 +70,18 @@ def calculate_ratios(df):
 
 def flag_ratio(name, value):
     """
-    Score a single ratio as Strong, Moderate, or Weak.
+    Score a single ratio as Strong, Moderate, Weak, or N/A.
 
     For all ratios except debt_to_equity: bigger = better.
     For debt_to_equity: smaller = better (less debt is healthier).
+    Returns "N/A" if the value is missing (NaN or None).
     """
+    try:
+        if value is None or math.isnan(float(value)):
+            return "N/A"
+    except (TypeError, ValueError):
+        return "N/A"
+
     t = THRESHOLDS[name]
 
     if name == "debt_to_equity":
@@ -80,6 +97,12 @@ def flag_ratio(name, value):
 
 def format_value(name, value):
     """Format a ratio value for display — percentages as %, ratios as plain numbers."""
+    try:
+        if value is None or math.isnan(float(value)):
+            return "N/A"
+    except (TypeError, ValueError):
+        return "N/A"
+
     if name == "debt_to_equity" or name == "current_ratio":
         return f"{value:.2f}x"
     else:
