@@ -19,6 +19,10 @@ from edgar_fetcher import get_company_cik, get_company_info, search_companies_by
 from financial_extractor import build_financials_dataframe
 from analyser import calculate_ratios, flag_ratio, format_value
 from peer_fetcher import fetch_peer_ratios
+from valuation_fetcher import (
+    fetch_valuation_metrics, format_valuation_value,
+    VALUATION_METRICS, VALUATION_CONTEXT, VALUATION_TYPICAL,
+)
 
 load_dotenv()
 
@@ -156,6 +160,71 @@ def show_ratio_cards(ratios):
         st.markdown("<br>", unsafe_allow_html=True)
 
 
+def render_valuation_card(label, value, typical_range):
+    """Single valuation metric card — same visual style as ratio cards, but no badge."""
+    # Only show the "Typical:" hint if the metric has one (market_cap does not)
+    typical_html = (
+        f"<div style='font-size:0.65rem;color:#9e9e9e;margin-top:8px;'>{typical_range}</div>"
+        if typical_range else "<div style='margin-top:16px;'></div>"
+    )
+    return f"""
+    <div class="metric-card">
+        <div class="metric-label">{label}</div>
+        <div class="metric-value">{value}</div>
+        {typical_html}
+    </div>"""
+
+
+def show_valuation_cards(val_data):
+    """
+    Display the 5 valuation metric cards plus an expandable explanation footnote.
+    val_data: dict returned by fetch_valuation_metrics(), or None if unavailable.
+    """
+    val_keys    = list(VALUATION_METRICS.keys())     # ["market_cap", "trailing_pe", ...]
+    val_labels  = {k: v[1] for k, v in VALUATION_METRICS.items()}  # key → display label
+
+    # Row 1: market_cap · trailing_pe · forward_pe
+    cols1 = st.columns(3, gap="small")
+    for i, col in enumerate(cols1):
+        key = val_keys[i]
+        raw = (val_data or {}).get(key)
+        with col:
+            st.markdown(
+                render_valuation_card(
+                    val_labels[key],
+                    format_valuation_value(key, raw),
+                    VALUATION_TYPICAL[key],
+                ),
+                unsafe_allow_html=True,
+            )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Row 2: ev_ebitda · price_to_book · (empty placeholder column)
+    cols2 = st.columns(3, gap="small")
+    for i in range(2):
+        key = val_keys[3 + i]
+        raw = (val_data or {}).get(key)
+        with cols2[i]:
+            st.markdown(
+                render_valuation_card(
+                    val_labels[key],
+                    format_valuation_value(key, raw),
+                    VALUATION_TYPICAL[key],
+                ),
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Expandable footnote — click to reveal full explanations + normal ranges
+    with st.expander("What do these valuation metrics mean?  (click to expand)"):
+        for key, ctx in VALUATION_CONTEXT.items():
+            st.markdown(f"**{ctx['label']}**")
+            st.markdown(f"{ctx['what']}")
+            st.caption(f"Normal range — {ctx['range']}")
+            st.markdown("---")
+
+
 def render_peer_comparison_table(companies):
     """
     Build a colour-coded HTML comparison table.
@@ -243,6 +312,76 @@ def render_peer_comparison_table(companies):
 
         rows_html += f"<tr>{cells}</tr>\n"
 
+    # ── Valuation section (appended below fundamentals if data is present) ────
+    # Check whether at least one company has valuation data attached
+    has_valuation = any(c.get("valuation") for c in companies)
+
+    if has_valuation:
+        n_cols = len(companies) + 1   # 1 label column + 1 per company
+
+        # Section divider row — a coloured banner separating the two blocks
+        rows_html += (
+            f"<tr><td colspan='{n_cols}' style='background:#e8eaf6;color:#3949ab;"
+            f"font-size:0.72rem;font-weight:700;padding:6px 14px;"
+            f"text-transform:uppercase;letter-spacing:0.06em;'>"
+            f"Valuation &nbsp;·&nbsp; Yahoo Finance · Market Data</td></tr>\n"
+        )
+
+        # Metrics where a LOWER value signals a cheaper / better-value stock
+        VAL_INVERTED   = {"trailing_pe", "forward_pe", "ev_ebitda", "price_to_book"}
+        # Market cap is pure size — no "good/bad" coloring
+        VAL_NO_COLOR   = {"market_cap"}
+
+        val_labels = {k: v[1] for k, v in VALUATION_METRICS.items()}
+
+        for key, label in val_labels.items():
+            # Pull the raw value for this metric from every company's valuation dict
+            values = [(c.get("valuation") or {}).get(key) for c in companies]
+
+            # Only positive values are meaningful for best/worst valuation comparison.
+            # A negative P/E (loss-making company) shouldn't win the "cheapest" award.
+            if key not in VAL_NO_COLOR:
+                valid = [(i, v) for i, v in enumerate(values)
+                         if v is not None and v == v and v > 0]
+            else:
+                valid = []   # market cap — skip coloring entirely
+
+            if len(valid) >= 2:
+                ordered = sorted(valid, key=lambda p: p[1])
+                if ordered[0][1] == ordered[-1][1]:
+                    best_idx = worst_idx = None
+                elif key in VAL_INVERTED:
+                    best_idx  = ordered[0][0]   # lowest multiple = cheapest = green
+                    worst_idx = ordered[-1][0]  # highest multiple = priciest = red
+                else:
+                    best_idx  = ordered[-1][0]
+                    worst_idx = ordered[0][0]
+            else:
+                best_idx = worst_idx = None
+
+            cells = (
+                f"<td style='padding:10px 14px;font-weight:600;color:#37474f;"
+                f"border-bottom:1px solid #e0e0e0'>{label}</td>"
+            )
+            for i, val in enumerate(values):
+                formatted = format_valuation_value(key, val)
+
+                if best_idx is not None and i == best_idx:
+                    bg, fg, fw = "#e8f5e9", "#2e7d32", "700"
+                elif worst_idx is not None and i == worst_idx:
+                    bg, fg, fw = "#ffebee", "#c62828", "700"
+                elif val is None or val != val:
+                    bg, fg, fw = "#fafafa", "#bdbdbd", "400"
+                else:
+                    bg, fg, fw = "#ffffff", "#2c2c2c", "400"
+
+                cells += (
+                    f"<td style='text-align:center;padding:10px 14px;"
+                    f"background:{bg};color:{fg};font-weight:{fw};"
+                    f"border-bottom:1px solid #e0e0e0'>{formatted}</td>"
+                )
+            rows_html += f"<tr>{cells}</tr>\n"
+
     return f"""
     <div style="overflow-x:auto;margin-top:12px;">
       <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
@@ -254,7 +393,8 @@ def render_peer_comparison_table(companies):
       <p style="font-size:0.75rem;color:#9e9e9e;margin-top:8px;">
         Green&nbsp;=&nbsp;best&nbsp;&nbsp;·&nbsp;&nbsp;Red&nbsp;=&nbsp;worst
         &nbsp;&nbsp;·&nbsp;&nbsp;
-        Primary company: SEC EDGAR &nbsp;·&nbsp; Peers: Yahoo Finance (TTM)
+        Fundamentals: SEC EDGAR (primary) / Yahoo Finance (peers)
+        &nbsp;·&nbsp; Valuation: Yahoo Finance · Market Data
       </p>
     </div>"""
 
@@ -322,10 +462,12 @@ def stream_llama_commentary(company_name, ticker, ratios, df):
 # or dropdown change). Without it, our search results vanish the moment the
 # user interacts with the dropdown.
 
-if "matches"          not in st.session_state: st.session_state.matches          = []
-if "selected"         not in st.session_state: st.session_state.selected         = None
-if "ready_to_analyse" not in st.session_state: st.session_state.ready_to_analyse = False
-if "peer_results"     not in st.session_state: st.session_state.peer_results     = None
+if "matches"            not in st.session_state: st.session_state.matches            = []
+if "selected"           not in st.session_state: st.session_state.selected           = None
+if "ready_to_analyse"   not in st.session_state: st.session_state.ready_to_analyse   = False
+if "peer_results"       not in st.session_state: st.session_state.peer_results       = None
+if "primary_valuation"  not in st.session_state: st.session_state.primary_valuation  = None
+if "valuation_ticker"   not in st.session_state: st.session_state.valuation_ticker   = None
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
@@ -350,10 +492,12 @@ if run and not search_input.strip():
 
 elif run:
     # New search — clear any previous state
-    st.session_state.matches          = []
-    st.session_state.selected         = None
-    st.session_state.ready_to_analyse = False
-    st.session_state.peer_results     = None
+    st.session_state.matches           = []
+    st.session_state.selected          = None
+    st.session_state.ready_to_analyse  = False
+    st.session_state.peer_results      = None
+    st.session_state.primary_valuation = None
+    st.session_state.valuation_ticker  = None
 
     query = search_input.strip()
 
@@ -437,6 +581,19 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
     st.markdown('<div class="section-heading">Ratio Analysis</div>', unsafe_allow_html=True)
     show_ratio_cards(ratios)
 
+    # Fetch valuation data once per company (cache in session_state to avoid
+    # re-fetching on every Streamlit rerun triggered by user interaction)
+    if st.session_state.valuation_ticker != ticker:
+        with st.spinner("Fetching live valuation data from Yahoo Finance..."):
+            st.session_state.primary_valuation = fetch_valuation_metrics(ticker)
+            st.session_state.valuation_ticker  = ticker
+
+    st.markdown('<div class="section-heading">Valuation</div>', unsafe_allow_html=True)
+    if st.session_state.primary_valuation is None:
+        st.caption("Valuation data unavailable from Yahoo Finance for this ticker.")
+    else:
+        show_valuation_cards(st.session_state.primary_valuation)
+
     st.markdown('<div class="section-heading">5-Year Revenue Trend</div>', unsafe_allow_html=True)
     show_revenue_chart(df)
 
@@ -474,14 +631,20 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
         if not peers_to_fetch:
             st.warning("Enter at least one peer ticker above, then click Compare.")
         else:
-            # Start the companies list with the primary company we already analysed.
-            # We reuse the EDGAR ratios already computed — no extra fetch needed.
-            companies = [{"ticker": ticker, "company_name": company_name, "ratios": ratios}]
+            # Start with the primary company — reuse EDGAR ratios + cached valuation
+            companies = [{
+                "ticker":       ticker,
+                "company_name": company_name,
+                "ratios":       ratios,
+                "valuation":    st.session_state.primary_valuation,
+            }]
 
             with st.spinner("Fetching peer data from Yahoo Finance..."):
                 for peer_ticker in peers_to_fetch:
                     peer_data = fetch_peer_ratios(peer_ticker)
                     if peer_data:
+                        # Fetch valuation separately for each peer (same yfinance source)
+                        peer_data["valuation"] = fetch_valuation_metrics(peer_ticker)
                         companies.append(peer_data)
                     else:
                         st.warning(
