@@ -15,7 +15,7 @@ import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv
 
-from edgar_fetcher import get_company_cik, search_companies_by_name
+from edgar_fetcher import get_company_cik, get_company_info, search_companies_by_name
 from financial_extractor import build_financials_dataframe
 from analyser import calculate_ratios, flag_ratio, format_value
 
@@ -250,13 +250,13 @@ elif run:
 
     query = search_input.strip()
 
-    # Try as a ticker first
+    # Try as a ticker first — also fetch the full registered company name
     with st.spinner("Searching SEC EDGAR..."):
-        cik = get_company_cik(query.upper())
+        cik, title = get_company_info(query.upper())
 
     if cik:
-        # Exact ticker match — go straight to analysis
-        st.session_state.selected         = {"ticker": query.upper(), "cik": cik, "title": query.upper()}
+        # Exact ticker match — go straight to analysis, show full name not just ticker
+        st.session_state.selected         = {"ticker": query.upper(), "cik": cik, "title": title}
         st.session_state.ready_to_analyse = True
     else:
         # Search by name

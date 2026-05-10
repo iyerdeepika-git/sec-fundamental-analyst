@@ -49,6 +49,22 @@ def get_company_cik(ticker):
     return None
 
 
+def get_company_info(ticker):
+    """
+    Like get_company_cik() but also returns the company's full registered name.
+    Returns a (cik, title) tuple, e.g. ("0001403161", "VISA INC.").
+    Returns (None, None) if the ticker isn't found.
+    """
+    url      = "https://www.sec.gov/files/company_tickers.json"
+    response = requests.get(url, headers=HEADERS)
+    data     = response.json()
+    for company in data.values():
+        if company["ticker"].upper() == ticker.upper():
+            cik = str(company["cik_str"]).zfill(10)
+            return cik, company["title"]
+    return None, None
+
+
 def get_recent_10k(cik):
     """
     Fetch the most recent 10-K filing for a company using their CIK number.
