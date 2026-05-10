@@ -86,6 +86,36 @@ def get_recent_10k(cik):
     return None
 
 
+def search_companies_by_name(query, max_results=8):
+    """
+    Search the SEC company list by company name (not ticker).
+    Returns a list of dicts: [{"ticker": "MA", "cik": "...", "title": "Mastercard Inc"}, ...]
+
+    Why this works: the same JSON file we use for ticker lookup also has every
+    company's full name in the "title" field. We just search that field instead.
+    """
+    url = "https://www.sec.gov/files/company_tickers.json"
+    response = requests.get(url, headers=HEADERS)
+    data = response.json()
+
+    query_lower = query.lower().strip()
+    matches = []
+    for company in data.values():
+        if query_lower in company["title"].lower():
+            matches.append({
+                "ticker": company["ticker"],
+                "cik":    str(company["cik_str"]).zfill(10),
+                "title":  company["title"],
+            })
+
+    # Put closest matches first: names that START with the query beat ones that contain it
+    matches.sort(key=lambda x: (
+        0 if x["title"].lower().startswith(query_lower) else 1,
+        x["title"]
+    ))
+    return matches[:max_results]
+
+
 # --- QUICK TEST ---
 # This block only runs when you execute THIS file directly (not when imported).
 # Think of it as a "test drive" button for this specific file.
