@@ -12,12 +12,16 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import streamlit as st
+import pandas as pd
 from groq import Groq
 from dotenv import load_dotenv
 
 from edgar_fetcher import get_company_cik, get_company_info, search_companies_by_name
 from financial_extractor import build_financials_dataframe
-from analyser import calculate_ratios, flag_ratio, format_value
+from analyser import (
+    calculate_ratios, flag_ratio, format_value,
+    calculate_confidence_score, find_data_gaps,
+)
 from peer_fetcher import fetch_peer_ratios
 from valuation_fetcher import (
     fetch_valuation_metrics, format_valuation_value,
@@ -409,34 +413,94 @@ def show_revenue_chart(df):
 
 # ── LLM HELPERS ───────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a senior fundamental equity analyst with 20 years of experience.
-You specialise in analysing publicly traded companies using SEC EDGAR financial data.
-Write in plain English. Use the specific numbers provided. No disclaimers, no padding.
-Structure your response with short bold headings."""
+SYSTEM_PROMPT = """You are a senior fundamental equity analyst at a top-tier hedge fund with 20 years of experience.
+You write balanced, critical analysis — NOT press releases.
+
+Core rules:
+- Lead every argument with specific numbers from the data provided
+- Give equal weight to bull and bear cases — do not favour one side
+- The bear case MUST reference actual data weaknesses (e.g. rising debt, compressing margins, slowing growth, weak or missing ratios) — do not invent generic risks
+- Be direct — your reader is a sophisticated investor who needs honest risk assessment, not reassurance
+- Use **bold headings** exactly as specified in the prompt — no extra sections, no conclusion paragraph, no disclaimers"""
 
 
 def build_analysis_prompt(company_name, ticker, ratios, df):
-    ratio_lines = [
-        f"  {n.replace('_',' ').title()}: {format_value(n,v)}  [{flag_ratio(n,v)}]"
+    # ── Section 1: Ratio table ─────────────────────────────────────────────────
+    ratio_lines = "\n".join(
+        f"  {n.replace('_', ' ').title()}: {format_value(n, v)}  [{flag_ratio(n, v)}]"
         for n, v in ratios.items()
-    ]
-    revenue_trend = ", ".join(
-        f"{idx}: ${df.loc[idx,'revenue']/1e9:.1f}B" for idx in df.index
     )
+
+    # ── Section 2: Revenue trend with YoY growth rates ────────────────────────
+    # Sort oldest-first so the LLM can read the trend left-to-right naturally
+    sorted_years = sorted(df.index)
+    revenue_lines = []
+    for i, year in enumerate(sorted_years):
+        rev = df.loc[year, "revenue"]
+        if pd.isna(rev):
+            revenue_lines.append(f"  {str(year)[:4]}: N/A")
+            continue
+        rev_b = rev / 1e9
+        if i > 0:
+            prev_rev = df.loc[sorted_years[i - 1], "revenue"]
+            if pd.notna(prev_rev) and prev_rev != 0:
+                pct = (rev - prev_rev) / prev_rev * 100
+                # {pct:+.1f} always prints the sign: "+8.3%" or "-2.1%"
+                revenue_lines.append(f"  {str(year)[:4]}: ${rev_b:.1f}B  ({pct:+.1f}% YoY)")
+            else:
+                revenue_lines.append(f"  {str(year)[:4]}: ${rev_b:.1f}B")
+        else:
+            revenue_lines.append(f"  {str(year)[:4]}: ${rev_b:.1f}B  (baseline)")
+
+    # ── Section 3: Data quality context ───────────────────────────────────────
+    confidence = calculate_confidence_score(ratios, df)
+    gaps       = find_data_gaps(ratios, df)
+
+    confidence_descriptions = {
+        5: "all metrics available, 5 complete fiscal years",
+        4: "minor gaps in 1–2 metrics or years",
+        3: "notable gaps — some metrics unavailable",
+        2: "significant gaps — several metrics or years missing",
+        1: "severe gaps — analysis reliability is limited",
+    }
+    confidence_note = confidence_descriptions.get(confidence, "")
+
+    gaps_block = ""
+    if gaps:
+        gap_lines = "\n".join(f"  - {g}" for g in gaps)
+        gaps_block = f"\n\nData gaps detected (factor these into your analysis):\n{gap_lines}"
+
     return f"""Company: {company_name} ({ticker.upper()})
 
-Key Financial Ratios (most recent fiscal year):
-{chr(10).join(ratio_lines)}
+=== FINANCIAL DATA ===
 
-5-Year Revenue Trend: {revenue_trend}
+Key Ratios (most recent fiscal year — [Strong] / [Moderate] / [Weak] / [N/A]):
+{ratio_lines}
 
-Write a concise fundamental analysis covering:
-1. Business quality — operating margins and profitability
-2. Financial health — balance sheet strength and debt load
-3. Growth trajectory — revenue momentum and sustainability
-4. Overall investment merit — would a value investor be interested?
+5-Year Revenue Trend (oldest → newest):
+{chr(10).join(revenue_lines)}
 
-Be direct, use the specific numbers above, and keep it under 400 words."""
+Data Completeness: {confidence}/5 — {confidence_note}{gaps_block}
+
+=== YOUR TASK ===
+
+Write a structured fundamental analysis with EXACTLY these three bold headings:
+
+**Bull Case**
+Identify 2–3 genuine financial strengths. Quote specific numbers from the data above.
+Explain WHY each strength matters in context (e.g. what it means for a company in this industry).
+
+**Bear Case**
+Identify at least 3 specific financial risks or warning signs visible in the data.
+You MUST reference actual numbers — do not write generic risks.
+For every metric rated [Weak], [Moderate], or [N/A], explain the investor implication.
+If revenue growth is decelerating, flag it. If debt is rising, flag it. If margins are compressing, flag it.
+
+**Overall Verdict**
+One short paragraph. Name a specific investor type (value / growth / income / avoid) and state
+exactly which metric(s) support that view. Be direct — do not hedge.
+
+Use the exact bold headings above. Keep total length under 450 words."""
 
 
 def stream_llama_commentary(company_name, ticker, ratios, df):
@@ -605,6 +669,33 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
     st.dataframe(display_df, use_container_width=True, height=215)
 
     st.markdown('<div class="section-heading">Analyst\'s Notes</div>', unsafe_allow_html=True)
+
+    # ── Confidence badge ───────────────────────────────────────────────────────
+    # Calculated entirely in Python — never trust the LLM to rate its own data quality.
+    confidence = calculate_confidence_score(ratios, df)
+    gaps       = find_data_gaps(ratios, df)
+
+    if confidence >= 4:
+        badge_bg, badge_fg = "#e8f5e9", "#2e7d32"
+    elif confidence >= 3:
+        badge_bg, badge_fg = "#fff8e1", "#f57f17"
+    else:
+        badge_bg, badge_fg = "#ffebee", "#c62828"
+
+    gap_summary = f" — {len(gaps)} data gap(s) detected" if gaps else " — Complete data"
+
+    st.markdown(f"""
+    <div style="background:{badge_bg};border-left:4px solid {badge_fg};
+        padding:10px 16px;border-radius:4px;margin-bottom:10px;font-size:0.85rem;">
+      <strong style="color:{badge_fg};">Data confidence: {confidence}/5</strong>{gap_summary}
+    </div>""", unsafe_allow_html=True)
+
+    if gaps:
+        with st.expander("View data gaps"):
+            for g in gaps:
+                st.caption(f"• {g}")
+
+    # ── AI commentary (streamed) ───────────────────────────────────────────────
     with st.container(border=True):
         try:
             st.write_stream(stream_llama_commentary(company_name, ticker, ratios, df))

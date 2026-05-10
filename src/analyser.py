@@ -145,6 +145,56 @@ def print_analysis(company_name, fiscal_year, ratios):
     print(f"{'='*58}\n")
 
 
+def calculate_confidence_score(ratios, df):
+    """
+    Rate data completeness from 1 (severe gaps) to 5 (fully complete).
+
+    Two factors are weighted together:
+      - 60%  ratio completeness: how many of the 6 ratios have real values
+      - 40%  year completeness:  how many of the 5 years have ≥5 of 7 columns filled
+
+    Returns an integer 1–5.
+    """
+    def _valid(v):
+        """True if v is a real number (not None or NaN)."""
+        try:
+            return v is not None and not math.isnan(float(v))
+        except (TypeError, ValueError):
+            return False
+
+    ratio_completeness = sum(1 for v in ratios.values() if _valid(v)) / max(len(ratios), 1)
+
+    # A year is considered "complete" if at least 5 of its 7 data columns are filled
+    complete_years = sum(1 for _, row in df.iterrows() if row.notna().sum() >= 5)
+    year_completeness = complete_years / max(len(df), 1)
+
+    raw_score = (ratio_completeness * 0.6 + year_completeness * 0.4) * 5
+    return max(1, min(5, round(raw_score)))
+
+
+def find_data_gaps(ratios, df):
+    """
+    Return a list of plain-English descriptions of every missing data point.
+    Used in the confidence badge UI and passed as context to the LLM prompt.
+    """
+    gaps = []
+
+    # Ratio-level gaps: any metric the analyser couldn't compute
+    for name, value in ratios.items():
+        if flag_ratio(name, value) == "N/A":
+            label = name.replace("_", " ").title()
+            gaps.append(f"{label} unavailable from EDGAR")
+
+    # Year-level gaps: individual columns missing for specific fiscal years
+    for year in df.index:
+        missing_cols = [c for c in df.columns if pd.isna(df.loc[year, c])]
+        if missing_cols:
+            cols_str = ", ".join(c.replace("_", " ").title() for c in missing_cols)
+            gaps.append(f"FY{str(year)[:4]}: {cols_str} missing")
+
+    return gaps
+
+
 # ── QUICK TEST ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     from edgar_fetcher import get_company_cik
