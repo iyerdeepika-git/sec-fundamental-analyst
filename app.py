@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from groq import Groq
 from dotenv import load_dotenv
 
@@ -20,7 +21,7 @@ from edgar_fetcher import get_company_cik, get_company_info, search_companies_by
 from financial_extractor import build_financials_dataframe
 from analyser import (
     calculate_ratios, flag_ratio, format_value,
-    calculate_confidence_score, find_data_gaps,
+    calculate_confidence_score, find_data_gaps, THRESHOLDS,
 )
 from peer_fetcher import fetch_peer_ratios
 from valuation_fetcher import (
@@ -162,6 +163,78 @@ def show_ratio_cards(ratios):
                         unsafe_allow_html=True,
                     )
         st.markdown("<br>", unsafe_allow_html=True)
+
+
+def show_threshold_legend():
+    """
+    Expandable table showing the exact numeric thresholds that define
+    Strong / Moderate / Weak for each of the 6 financial ratios.
+    Makes the rating system transparent and trustworthy for users.
+    """
+    LABELS = {
+        "operating_margin":  "Operating Margin",
+        "net_profit_margin": "Net Profit Margin",
+        "revenue_growth":    "Revenue Growth",
+        "debt_to_equity":    "Debt / Equity",
+        "current_ratio":     "Current Ratio",
+        "return_on_equity":  "Return on Equity",
+    }
+    # Metrics where lower is better (strong threshold is the LOWER number)
+    INVERTED    = {"debt_to_equity"}
+    # Metrics that display as "x" multiples rather than percentages
+    RATIO_STYLE = {"debt_to_equity", "current_ratio"}
+
+    rows_html = ""
+    for key, t in THRESHOLDS.items():
+        label  = LABELS[key]
+        s, m   = t["strong"], t["moderate"]
+
+        # Format threshold values to match how the metric cards display them
+        s_fmt = f"{s:.2f}x" if key in RATIO_STYLE else f"{s*100:.0f}%"
+        m_fmt = f"{m:.2f}x" if key in RATIO_STYLE else f"{m*100:.0f}%"
+
+        if key in INVERTED:
+            # Debt/Equity: lower is better, so the ranges are flipped
+            strong_rng   = f"< {s_fmt}"
+            moderate_rng = f"{s_fmt} – {m_fmt}"
+            weak_rng     = f"> {m_fmt}"
+        else:
+            strong_rng   = f"> {s_fmt}"
+            moderate_rng = f"{m_fmt} – {s_fmt}"
+            weak_rng     = f"< {m_fmt}"
+
+        rows_html += (
+            f"<tr>"
+            f"<td style='padding:7px 12px;font-weight:600;color:#37474f;"
+            f"border-bottom:1px solid #f0f0f0'>{label}</td>"
+            f"<td style='padding:7px 12px;text-align:center;color:#2e7d32;"
+            f"background:#f1f8e9;border-bottom:1px solid #f0f0f0'>{strong_rng}</td>"
+            f"<td style='padding:7px 12px;text-align:center;color:#f57f17;"
+            f"background:#fffde7;border-bottom:1px solid #f0f0f0'>{moderate_rng}</td>"
+            f"<td style='padding:7px 12px;text-align:center;color:#c62828;"
+            f"background:#fff8f8;border-bottom:1px solid #f0f0f0'>{weak_rng}</td>"
+            f"</tr>"
+        )
+
+    with st.expander("How are Strong / Moderate / Weak ratings calculated?  (click to expand)"):
+        st.markdown(f"""
+        <table style='width:100%;border-collapse:collapse;font-size:0.88rem;margin-top:4px;'>
+          <thead>
+            <tr style='background:#f5f5f5;'>
+              <th style='padding:8px 12px;text-align:left;color:#37474f;'>Metric</th>
+              <th style='padding:8px 12px;text-align:center;color:#2e7d32;'>Strong</th>
+              <th style='padding:8px 12px;text-align:center;color:#f57f17;'>Moderate</th>
+              <th style='padding:8px 12px;text-align:center;color:#c62828;'>Weak</th>
+            </tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+        <p style='font-size:0.75rem;color:#9e9e9e;margin-top:10px;'>
+          These are sector-agnostic benchmarks used as general screening rules.
+          To adjust them for your own criteria, edit
+          <code>src/analyser.py &rarr; THRESHOLDS</code>.
+        </p>
+        """, unsafe_allow_html=True)
 
 
 def render_valuation_card(label, value, typical_range):
@@ -411,6 +484,99 @@ def show_revenue_chart(df):
     st.bar_chart(chart_df.sort_index())
 
 
+def show_margin_trend_chart(df):
+    """
+    Interactive Plotly multi-line chart showing three profitability metrics
+    as percentages over the available fiscal years.
+
+    Why Plotly instead of st.bar_chart / matplotlib?
+    - Hover tooltips: exact values appear when you mouse over any data point
+    - Legend toggling: click a line name to hide/show it
+    - Zoom: drag to zoom into a specific year range
+    - This is a web app — static charts belong in PDFs, not dashboards
+    """
+    # Sort ascending so time flows left → right on the x-axis
+    chart_df = df.sort_index(ascending=True).copy()
+
+    # Clean year labels: "2024-09-30" → "2024"
+    # Using str(y)[:4] slices the first 4 characters of the date string
+    years = [str(y)[:4] for y in chart_df.index]
+
+    # Calculate each metric as a percentage for every row in the DataFrame.
+    # Pandas division is element-wise — it divides each row's value automatically,
+    # just like dragging a formula down a column in Excel.
+    # Multiplying by 100 converts a decimal (0.42) into a percentage (42.0).
+    op_margin  = (chart_df["operating_income"] / chart_df["revenue"] * 100).round(1)
+    net_margin = (chart_df["net_income"]        / chart_df["revenue"] * 100).round(1)
+    roe        = (chart_df["net_income"]        / chart_df["equity"]  * 100).round(1)
+
+    # Each (name, series, colour) tuple defines one line on the chart
+    LINES = [
+        ("Operating Margin",  op_margin,  "#1a237e"),
+        ("Net Profit Margin", net_margin, "#2e7d32"),
+        ("Return on Equity",  roe,        "#e65100"),
+    ]
+
+    # go.Figure() creates a blank Plotly chart — like opening a new blank spreadsheet
+    fig = go.Figure()
+
+    for name, series, colour in LINES:
+        # series.notna().any() checks if at least ONE value in this column is real.
+        # If all values are NaN (data completely missing), skip this line entirely.
+        if series.notna().any():
+            fig.add_trace(go.Scatter(
+                x    = years,
+                # .where(series.notna()) keeps real values, turns NaN into None.
+                # Plotly renders None as a gap in the line rather than a zero,
+                # which is honest — a gap signals missing data, not a zero result.
+                y    = series.where(series.notna()),
+                mode = "lines+markers",   # draw both a line AND dots at each year
+                name = name,
+                line   = dict(color=colour, width=2.5),
+                marker = dict(size=7),
+                # hovertemplate controls the tooltip text on hover.
+                # %{y:.1f} formats the y-value to 1 decimal place.
+                # <extra></extra> removes the default trace name from the tooltip box.
+                hovertemplate=f"<b>{name}</b>: %{{y:.1f}}%<extra></extra>",
+            ))
+
+    fig.update_layout(
+        title = dict(
+            text = "Margin & Return Trends",
+            font = dict(size=14, color="#1a237e"),
+            x    = 0,    # left-align the title
+        ),
+        xaxis = dict(
+            title      = "Fiscal Year",
+            tickfont   = dict(size=12),
+            showgrid   = True,
+            gridcolor  = "#f0f0f0",
+        ),
+        yaxis = dict(
+            title       = "(%)",
+            ticksuffix  = "%",       # appends "%" to every y-axis label automatically
+            tickfont    = dict(size=12),
+            showgrid    = True,
+            gridcolor   = "#f0f0f0",
+            zeroline    = True,
+            zerolinecolor = "#e0e0e0",
+        ),
+        # Legend placed horizontally above the chart so it doesn't eat into plot space
+        legend = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        plot_bgcolor  = "#ffffff",   # white chart area
+        paper_bgcolor = "#ffffff",   # white surrounding area
+        # hovermode="x unified" shows ALL lines' values in one tooltip when hovering
+        # over any x position — much cleaner than separate tooltips per line
+        hovermode = "x unified",
+        margin    = dict(l=50, r=20, t=60, b=50),
+        height    = 360,
+    )
+
+    # st.plotly_chart renders the interactive chart directly into the Streamlit page.
+    # use_container_width=True makes it stretch to fill the available column width.
+    st.plotly_chart(fig, use_container_width=True)
+
+
 # ── LLM HELPERS ───────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a senior fundamental equity analyst at a top-tier hedge fund with 20 years of experience.
@@ -644,6 +810,7 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
     st.markdown('<div class="section-heading">Ratio Analysis</div>', unsafe_allow_html=True)
     show_ratio_cards(ratios)
+    show_threshold_legend()
 
     # Fetch valuation data once per company (cache in session_state to avoid
     # re-fetching on every Streamlit rerun triggered by user interaction)
@@ -660,6 +827,9 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
     st.markdown('<div class="section-heading">5-Year Revenue Trend</div>', unsafe_allow_html=True)
     show_revenue_chart(df)
+
+    st.markdown('<div class="section-heading">Margin & Return Trends</div>', unsafe_allow_html=True)
+    show_margin_trend_chart(df)
 
     st.markdown('<div class="section-heading">5-Year Financial Summary (USD billions)</div>', unsafe_allow_html=True)
     display_df = df.copy()
