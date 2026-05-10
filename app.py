@@ -261,25 +261,15 @@ elif run:
             )
             st.stop()
 
-        if len(matches) == 1:
-            m            = matches[0]
-            ticker       = m["ticker"]
-            cik          = m["cik"]
-            company_name = m["title"]
-        else:
-            # Multiple hits — show a dropdown and wait for the user to pick
-            options = {f"{m['title']}  ({m['ticker']})": m for m in matches}
-            choice  = st.selectbox(
-                f"Found {len(matches)} matches for '{query}' — select one:",
-                list(options.keys()),
-            )
-            if st.button("Confirm selection", type="primary"):
-                m            = options[choice]
-                ticker       = m["ticker"]
-                cik          = m["cik"]
-                company_name = m["title"]
-            else:
-                st.stop()
+        # Always use the top result — search already sorts closest matches first.
+        # Show all matches as a small info note so the user knows what was found.
+        m            = matches[0]
+        ticker       = m["ticker"]
+        cik          = m["cik"]
+        company_name = m["title"]
+        if len(matches) > 1:
+            other_names = ", ".join(f"{x['title']} ({x['ticker']})" for x in matches[1:4])
+            st.info(f"Showing best match. Other results: {other_names}")
 
     if not cik:
         st.error(f"Could not find **{query}** on SEC EDGAR. Check the spelling or try the ticker directly.")
