@@ -235,39 +235,42 @@ if run and not search_input.strip():
     st.warning("Type a ticker symbol (e.g. AAPL) or a company name (e.g. Apple).")
 
 elif run:
-    query  = search_input.strip()
-    ticker = None
-    cik    = None
+    query        = search_input.strip()
+    ticker       = None
+    cik          = None
     company_name = query
 
-    # Heuristic: tickers are 1-5 chars and contain no spaces
-    looks_like_ticker = len(query) <= 5 and " " not in query
+    # Always try the input as a ticker first — it's fast and works for "AAPL", "V", "MA".
+    # If that finds nothing, fall back to a full name search.
+    # This avoids the old heuristic that wrongly treated "Apple" as a ticker.
+    with st.spinner("Searching SEC EDGAR..."):
+        cik = get_company_cik(query.upper())
 
-    if looks_like_ticker:
-        with st.spinner(f"Looking up {query.upper()} on SEC EDGAR..."):
-            cik = get_company_cik(query.upper())
+    if cik:
         ticker       = query.upper()
         company_name = query.upper()
     else:
-        # Search by name and ask the user to confirm if multiple matches found
-        with st.spinner(f"Searching SEC EDGAR for '{query}'..."):
+        # Not a valid ticker — search by company name
+        with st.spinner(f"Searching by company name for '{query}'..."):
             matches = search_companies_by_name(query)
 
         if not matches:
-            st.error(f"No companies found matching **'{query}'**. Try a ticker symbol instead (e.g. MA for Mastercard).")
+            st.error(
+                f"No companies found matching **'{query}'**. "
+                "Try the official ticker symbol (e.g. AAPL for Apple, GOOGL for Alphabet/Google)."
+            )
             st.stop()
 
         if len(matches) == 1:
-            # Only one result — use it automatically
             m            = matches[0]
             ticker       = m["ticker"]
             cik          = m["cik"]
             company_name = m["title"]
         else:
-            # Multiple results — show a dropdown so the user can pick
+            # Multiple hits — show a dropdown and wait for the user to pick
             options = {f"{m['title']}  ({m['ticker']})": m for m in matches}
             choice  = st.selectbox(
-                f"Found {len(matches)} companies matching '{query}' — select one:",
+                f"Found {len(matches)} matches for '{query}' — select one:",
                 list(options.keys()),
             )
             if st.button("Confirm selection", type="primary"):
@@ -276,11 +279,7 @@ elif run:
                 cik          = m["cik"]
                 company_name = m["title"]
             else:
-                st.stop()   # wait for the user to confirm before continuing
-
-    if not cik and ticker:
-        # Ticker path: cik might still be None if get_company_cik failed
-        pass
+                st.stop()
 
     if not cik:
         st.error(f"Could not find **{query}** on SEC EDGAR. Check the spelling or try the ticker directly.")

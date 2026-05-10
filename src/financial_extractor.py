@@ -13,21 +13,41 @@ EDGAR_BASE_URL = "https://data.sec.gov"
 # We try each name in order and use the first one that actually has data.
 # Think of it like trying several synonyms until the filing cabinet responds.
 METRICS = {
-    # Visa adopted ASC 606 in 2019 and switched field names — try the newer one first
+    # Revenue: companies use many different XBRL tags for the same concept.
+    # Tech/consumer companies use ASC 606 names; banks use interest income names;
+    # older filers still use legacy names. We try the most common ones in order.
     "revenue": (
-        ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet"],
+        [
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "Revenues",
+            "SalesRevenueNet",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueGoodsNet",
+            "SalesRevenueServicesNet",
+            "RevenuesNetOfInterestExpense",
+            "InterestAndNoninterestIncome",
+            "TotalRevenues",
+        ],
         "USD"
     ),
     "net_income": (
-        ["NetIncomeLoss"],
+        [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic",
+        ],
         "USD"
     ),
     "operating_income": (
-        ["OperatingIncomeLoss"],
+        [
+            "OperatingIncomeLoss",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        ],
         "USD"
     ),
     "long_term_debt": (
-        ["LongTermDebtNoncurrent", "LongTermDebt"],
+        ["LongTermDebtNoncurrent", "LongTermDebt", "LongTermNotesPayable"],
         "USD"
     ),
     "current_assets": (
@@ -38,16 +58,15 @@ METRICS = {
         ["LiabilitiesCurrent"],
         "USD"
     ),
-    # Visa reports equity including non-controlling interests — try that first
     "equity": (
-        ["StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
-         "StockholdersEquity",
-         "StockholdersEquityAttributableToParent"],
+        [
+            "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "StockholdersEquity",
+            "StockholdersEquityAttributableToParent",
+            "PartnersCapital",
+        ],
         "USD"
     ),
-    # NOTE: EarningsPerShareDiluted and WeightedAverageNumberOfDilutedSharesOutstanding
-    # are not available in Visa's EDGAR XBRL data. EPS can be sourced separately
-    # (e.g. Yahoo Finance) and added in a future iteration.
 }
 
 
@@ -100,6 +119,9 @@ def build_financials_dataframe(cik):
     df = pd.DataFrame(all_data)
     df.index.name = "fiscal_year_end"
     df = df.sort_index(ascending=False)
+    # Drop years where the two most critical income items are missing —
+    # this filters out stub periods and years before a company switched XBRL tags
+    df = df.dropna(subset=["revenue", "net_income"])
     df = df.head(5)
 
     return df
