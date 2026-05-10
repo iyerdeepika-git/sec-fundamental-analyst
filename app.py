@@ -212,6 +212,16 @@ def stream_llama_commentary(company_name, ticker, ratios, df):
             yield text
 
 
+# ── SESSION STATE SETUP ───────────────────────────────────────────────────────
+# session_state survives Streamlit reruns (which happen on every button click
+# or dropdown change). Without it, our search results vanish the moment the
+# user interacts with the dropdown.
+
+if "matches"          not in st.session_state: st.session_state.matches          = []
+if "selected"         not in st.session_state: st.session_state.selected         = None
+if "ready_to_analyse" not in st.session_state: st.session_state.ready_to_analyse = False
+
+
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
 
 st.markdown('<div class="section-heading">Search</div>', unsafe_allow_html=True)
@@ -228,65 +238,78 @@ with col_btn:
 
 
 # ── SEARCH LOGIC ──────────────────────────────────────────────────────────────
-# If the user types something short and uppercase-ish, treat it as a ticker.
-# Otherwise, search by company name and let them pick from the results.
 
 if run and not search_input.strip():
     st.warning("Type a ticker symbol (e.g. AAPL) or a company name (e.g. Apple).")
 
 elif run:
-    query        = search_input.strip()
-    ticker       = None
-    cik          = None
-    company_name = query
+    # New search — clear any previous state
+    st.session_state.matches          = []
+    st.session_state.selected         = None
+    st.session_state.ready_to_analyse = False
 
-    # Always try the input as a ticker first — it's fast and works for "AAPL", "V", "MA".
-    # If that finds nothing, fall back to a full name search.
-    # This avoids the old heuristic that wrongly treated "Apple" as a ticker.
+    query = search_input.strip()
+
+    # Try as a ticker first
     with st.spinner("Searching SEC EDGAR..."):
         cik = get_company_cik(query.upper())
 
     if cik:
-        ticker       = query.upper()
-        company_name = query.upper()
+        # Exact ticker match — go straight to analysis
+        st.session_state.selected         = {"ticker": query.upper(), "cik": cik, "title": query.upper()}
+        st.session_state.ready_to_analyse = True
     else:
-        # Not a valid ticker — search by company name
-        with st.spinner(f"Searching by company name for '{query}'..."):
+        # Search by name
+        with st.spinner(f"Searching for '{query}'..."):
             matches = search_companies_by_name(query)
 
         if not matches:
             st.error(
                 f"No companies found matching **'{query}'**. "
-                "Try the official ticker symbol (e.g. AAPL for Apple, GOOGL for Alphabet/Google)."
+                "Try the official ticker (e.g. AAPL for Apple, GOOGL for Alphabet/Google)."
             )
-            st.stop()
+        elif len(matches) == 1:
+            st.session_state.selected         = matches[0]
+            st.session_state.ready_to_analyse = True
+        else:
+            # Multiple results — store them so the dropdown stays alive across reruns
+            st.session_state.matches = matches
 
-        # Always use the top result — search already sorts closest matches first.
-        # Show all matches as a small info note so the user knows what was found.
-        m            = matches[0]
-        ticker       = m["ticker"]
-        cik          = m["cik"]
-        company_name = m["title"]
-        if len(matches) > 1:
-            other_names = ", ".join(f"{x['title']} ({x['ticker']})" for x in matches[1:4])
-            st.info(f"Showing best match. Other results: {other_names}")
 
-    if not cik:
-        st.error(f"Could not find **{query}** on SEC EDGAR. Check the spelling or try the ticker directly.")
-        st.stop()
+# ── COMPANY SELECTION DROPDOWN ────────────────────────────────────────────────
+# This block runs on every rerun while matches are stored in session_state,
+# so the dropdown stays visible even when the user opens/scrolls it.
 
-    # ── DATA + ANALYSIS ───────────────────────────────────────────────────────
+if st.session_state.matches and not st.session_state.ready_to_analyse:
+    options = {f"{m['title']}  ({m['ticker']})": m for m in st.session_state.matches}
+    choice  = st.selectbox(
+        f"Found {len(st.session_state.matches)} companies — select one:",
+        list(options.keys()),
+    )
+    if st.button("Confirm selection →", type="primary"):
+        st.session_state.selected         = options[choice]
+        st.session_state.ready_to_analyse = True
+        st.session_state.matches          = []
+        st.rerun()
+
+
+# ── ANALYSIS ──────────────────────────────────────────────────────────────────
+# Only runs once a company is confirmed (either by ticker match or dropdown pick).
+
+if st.session_state.ready_to_analyse and st.session_state.selected:
+    sel          = st.session_state.selected
+    ticker       = sel["ticker"]
+    cik          = sel["cik"]
+    company_name = sel["title"]
 
     with st.spinner("Downloading 5 years of financial data from EDGAR..."):
         df = build_financials_dataframe(cik)
 
-    ratios = calculate_ratios(df)
-    flags  = [flag_ratio(n, v) for n, v in ratios.items()]
-    strong = flags.count("Strong")
-    total  = len(flags)
+    ratios  = calculate_ratios(df)
+    flags   = [flag_ratio(n, v) for n, v in ratios.items()]
+    strong  = flags.count("Strong")
+    total   = len(flags)
     verdict = "STRONG" if strong >= 5 else "MODERATE" if strong >= 3 else "WEAK"
-
-    # ── RESULTS ───────────────────────────────────────────────────────────────
 
     st.markdown(f"""
     <div style="margin-top:8px;">
