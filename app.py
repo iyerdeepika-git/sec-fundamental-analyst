@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from edgar_fetcher import get_company_cik, get_company_info, search_companies_by_name
 from financial_extractor import build_financials_dataframe
 from analyser import calculate_ratios, flag_ratio, format_value
+from peer_fetcher import fetch_peer_ratios
 
 load_dotenv()
 
@@ -155,6 +156,109 @@ def show_ratio_cards(ratios):
         st.markdown("<br>", unsafe_allow_html=True)
 
 
+def render_peer_comparison_table(companies):
+    """
+    Build a colour-coded HTML comparison table.
+
+    companies: list of dicts, each shaped like:
+        {"ticker": "MA", "company_name": "Mastercard Inc.", "ratios": {...}}
+
+    For each metric row: the best value is highlighted green, the worst red.
+    For Debt/Equity specifically, lower is better (inverted logic).
+    """
+    RATIO_LABELS = {
+        "operating_margin":  "Operating Margin",
+        "net_profit_margin": "Net Profit Margin",
+        "revenue_growth":    "Revenue Growth",
+        "debt_to_equity":    "Debt / Equity",
+        "current_ratio":     "Current Ratio",
+        "return_on_equity":  "Return on Equity",
+    }
+    # For these metrics, a LOWER number is better (inverted from the rest)
+    INVERTED = {"debt_to_equity"}
+
+    # ── Header row ────────────────────────────────────────────────────────────
+    header_cells = "<th style='text-align:left;padding:10px 14px;'>Metric</th>"
+    for c in companies:
+        header_cells += (
+            f"<th style='text-align:center;padding:10px 14px;'>"
+            f"{c['company_name']}<br>"
+            f"<span style='font-weight:400;color:#c5cae9;font-size:0.75rem'>"
+            f"{c['ticker'].upper()}</span></th>"
+        )
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    rows_html = ""
+    for metric, label in RATIO_LABELS.items():
+        # Pull the raw numeric value for this metric from every company
+        values = [c["ratios"].get(metric) for c in companies]
+
+        # Find valid (non-None, non-NaN) values to determine best and worst.
+        # The trick "v == v" is False ONLY for NaN (NaN is never equal to itself
+        # in standard floating-point maths — it's a quirk of the IEEE standard).
+        # Think of it as: "is this a real number, not a blank?"
+        valid = [(i, v) for i, v in enumerate(values)
+                 if v is not None and v == v]
+
+        # Determine which index is the best and which is the worst
+        if len(valid) >= 2:
+            ordered   = sorted(valid, key=lambda pair: pair[1])  # ascending by value
+            min_val   = ordered[0][1]
+            max_val   = ordered[-1][1]
+
+            if min_val == max_val:
+                # All companies tied — no colouring
+                best_idx = worst_idx = None
+            elif metric in INVERTED:
+                best_idx  = ordered[0][0]   # lowest value wins (less debt is better)
+                worst_idx = ordered[-1][0]  # highest value loses
+            else:
+                best_idx  = ordered[-1][0]  # highest value wins
+                worst_idx = ordered[0][0]   # lowest value loses
+        else:
+            best_idx = worst_idx = None
+
+        # Build one table cell per company for this metric row
+        cells = (
+            f"<td style='padding:10px 14px;font-weight:600;color:#37474f;"
+            f"border-bottom:1px solid #e0e0e0'>{label}</td>"
+        )
+        for i, val in enumerate(values):
+            formatted = format_value(metric, val)
+
+            if best_idx is not None and i == best_idx:
+                bg, fg, fw = "#e8f5e9", "#2e7d32", "700"
+            elif worst_idx is not None and i == worst_idx:
+                bg, fg, fw = "#ffebee", "#c62828", "700"
+            elif val is None or val != val:   # NaN cell
+                bg, fg, fw = "#fafafa", "#bdbdbd", "400"
+            else:
+                bg, fg, fw = "#ffffff", "#2c2c2c", "400"
+
+            cells += (
+                f"<td style='text-align:center;padding:10px 14px;"
+                f"background:{bg};color:{fg};font-weight:{fw};"
+                f"border-bottom:1px solid #e0e0e0'>{formatted}</td>"
+            )
+
+        rows_html += f"<tr>{cells}</tr>\n"
+
+    return f"""
+    <div style="overflow-x:auto;margin-top:12px;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+        <thead>
+          <tr style="background:#1a237e;color:white;">{header_cells}</tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+      <p style="font-size:0.75rem;color:#9e9e9e;margin-top:8px;">
+        Green&nbsp;=&nbsp;best&nbsp;&nbsp;·&nbsp;&nbsp;Red&nbsp;=&nbsp;worst
+        &nbsp;&nbsp;·&nbsp;&nbsp;
+        Primary company: SEC EDGAR &nbsp;·&nbsp; Peers: Yahoo Finance (TTM)
+      </p>
+    </div>"""
+
+
 def show_revenue_chart(df):
     """Bar chart of 5-year revenue, oldest year on the left."""
     chart_df = df[["revenue"]].copy()
@@ -221,6 +325,7 @@ def stream_llama_commentary(company_name, ticker, ratios, df):
 if "matches"          not in st.session_state: st.session_state.matches          = []
 if "selected"         not in st.session_state: st.session_state.selected         = None
 if "ready_to_analyse" not in st.session_state: st.session_state.ready_to_analyse = False
+if "peer_results"     not in st.session_state: st.session_state.peer_results     = None
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
@@ -248,6 +353,7 @@ elif run:
     st.session_state.matches          = []
     st.session_state.selected         = None
     st.session_state.ready_to_analyse = False
+    st.session_state.peer_results     = None
 
     query = search_input.strip()
 
@@ -350,6 +456,48 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
                 st.error("GROQ_API_KEY missing or invalid — check your .env file.")
             else:
                 st.error(f"Groq error: {e}")
+
+    # ── PEER COMPARISON ───────────────────────────────────────────────────────
+    st.markdown('<div class="section-heading">Peer Comparison</div>', unsafe_allow_html=True)
+    st.caption("Enter up to 2 competitor tickers to compare all 6 ratios side-by-side.")
+
+    pcol1, pcol2 = st.columns(2)
+    with pcol1:
+        peer1_input = st.text_input("Peer 1 ticker", placeholder="e.g. MA",  key="peer1")
+    with pcol2:
+        peer2_input = st.text_input("Peer 2 ticker", placeholder="e.g. AXP", key="peer2")
+
+    if st.button("Compare Peers →", type="secondary"):
+        # Collect whichever peer tickers the user actually filled in
+        peers_to_fetch = [t.strip().upper() for t in [peer1_input, peer2_input] if t.strip()]
+
+        if not peers_to_fetch:
+            st.warning("Enter at least one peer ticker above, then click Compare.")
+        else:
+            # Start the companies list with the primary company we already analysed.
+            # We reuse the EDGAR ratios already computed — no extra fetch needed.
+            companies = [{"ticker": ticker, "company_name": company_name, "ratios": ratios}]
+
+            with st.spinner("Fetching peer data from Yahoo Finance..."):
+                for peer_ticker in peers_to_fetch:
+                    peer_data = fetch_peer_ratios(peer_ticker)
+                    if peer_data:
+                        companies.append(peer_data)
+                    else:
+                        st.warning(
+                            f"Could not fetch data for **{peer_ticker}** — "
+                            "check the ticker symbol and try again."
+                        )
+
+            # Store in session_state so the table stays visible on Streamlit reruns
+            st.session_state.peer_results = companies
+
+    # Render the comparison table if we have stored results
+    if st.session_state.peer_results:
+        st.markdown(
+            render_peer_comparison_table(st.session_state.peer_results),
+            unsafe_allow_html=True,
+        )
 
     st.markdown(
         '<div class="app-footer">Data: SEC EDGAR (public API) &nbsp;·&nbsp; '
