@@ -671,7 +671,8 @@ Use the exact bold headings above. Keep total length under 450 words."""
 
 def stream_llama_commentary(company_name, ticker, ratios, df):
     """Generator: yields text chunks as Llama writes them, for live streaming in the UI."""
-    client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
+    api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+    client = Groq(api_key=api_key)
     stream = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
