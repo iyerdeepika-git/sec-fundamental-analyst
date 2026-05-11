@@ -302,6 +302,97 @@ def show_valuation_cards(val_data):
             st.markdown("---")
 
 
+def render_peer_search_widget(peer_num):
+    """
+    A self-contained company search widget for one peer slot.
+    Accepts a company name OR ticker — mirrors the main search bar exactly.
+    Stores its state in session_state so results survive Streamlit reruns.
+    Returns the confirmed company dict {"ticker", "cik", "title"} or None.
+    """
+    prefix = f"peer{peer_num}"   # "peer1" or "peer2" — used to namespace all state keys
+
+    # ── Input row: text box + Search button side by side ──────────────────────
+    col_input, col_btn = st.columns([4, 1], gap="small")
+    with col_input:
+        query = st.text_input(
+            f"Peer {peer_num} — company name or ticker",
+            placeholder="e.g.  MA  or  Mastercard",
+            key=f"{prefix}_input",
+        )
+    with col_btn:
+        # Vertical spacer so the button lines up with the text input
+        st.markdown("<div style='margin-top:24px'></div>", unsafe_allow_html=True)
+        searched = st.button("Search", key=f"{prefix}_btn", use_container_width=True)
+
+    # ── Run the EDGAR search when the Search button is clicked ────────────────
+    if searched and query.strip():
+        # Clear any previous results for this peer slot before searching again
+        st.session_state[f"{prefix}_matches"]   = []
+        st.session_state[f"{prefix}_confirmed"] = None
+
+        with st.spinner(f"Searching EDGAR..."):
+            cik, title = get_company_info(query.strip().upper())
+
+        if cik:
+            # Exact ticker match — confirm immediately, no dropdown needed
+            st.session_state[f"{prefix}_confirmed"] = {
+                "ticker": query.strip().upper(),
+                "cik":    cik,
+                "title":  title,
+            }
+        else:
+            matches = search_companies_by_name(query.strip())
+            if not matches:
+                st.warning(
+                    f"No companies found for **'{query.strip()}'**. "
+                    "Try the stock ticker symbol (e.g. **MA** for Mastercard)."
+                )
+            elif len(matches) == 1:
+                # Only one result — confirm it automatically
+                st.session_state[f"{prefix}_confirmed"] = matches[0]
+            else:
+                # Multiple results — store them and show a dropdown below
+                st.session_state[f"{prefix}_matches"] = matches
+
+    # ── Dropdown (only shown when multiple matches and nothing confirmed yet) ──
+    matches   = st.session_state.get(f"{prefix}_matches", [])
+    confirmed = st.session_state.get(f"{prefix}_confirmed")
+
+    if matches and not confirmed:
+        options = {f"{m['title']}  ({m['ticker']})": m for m in matches}
+        choice  = st.selectbox(
+            f"Found {len(matches)} companies — select one:",
+            list(options.keys()),
+            key=f"{prefix}_select",
+        )
+        if st.button("Confirm selection →", key=f"{prefix}_confirm", type="primary"):
+            st.session_state[f"{prefix}_confirmed"] = options[choice]
+            st.session_state[f"{prefix}_matches"]   = []
+            st.rerun()   # re-render the widget showing the confirmed chip
+
+    # ── Confirmed chip — shows the selected company with a Clear button ────────
+    confirmed = st.session_state.get(f"{prefix}_confirmed")
+    if confirmed:
+        col_chip, col_clear = st.columns([6, 1])
+        with col_chip:
+            st.markdown(
+                f"<div style='background:#e8f5e9;border-left:3px solid #2e7d32;"
+                f"padding:8px 14px;border-radius:4px;font-size:0.88rem;color:#1b5e20;'>"
+                f"<strong>{confirmed['title']}</strong>"
+                f"&nbsp;<span style='color:#555;font-weight:400'>({confirmed['ticker']})</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_clear:
+            st.markdown("<div style='margin-top:4px'></div>", unsafe_allow_html=True)
+            if st.button("Clear", key=f"{prefix}_clear"):
+                st.session_state[f"{prefix}_confirmed"] = None
+                st.session_state[f"{prefix}_matches"]   = []
+                st.rerun()
+
+    return st.session_state.get(f"{prefix}_confirmed")
+
+
 def render_peer_comparison_table(companies):
     """
     Build a colour-coded HTML comparison table.
@@ -699,6 +790,10 @@ if "ready_to_analyse"   not in st.session_state: st.session_state.ready_to_analy
 if "peer_results"       not in st.session_state: st.session_state.peer_results       = None
 if "primary_valuation"  not in st.session_state: st.session_state.primary_valuation  = None
 if "valuation_ticker"   not in st.session_state: st.session_state.valuation_ticker   = None
+if "peer1_confirmed"    not in st.session_state: st.session_state.peer1_confirmed    = None
+if "peer1_matches"      not in st.session_state: st.session_state.peer1_matches      = []
+if "peer2_confirmed"    not in st.session_state: st.session_state.peer2_confirmed    = None
+if "peer2_matches"      not in st.session_state: st.session_state.peer2_matches      = []
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
@@ -729,6 +824,10 @@ elif run:
     st.session_state.peer_results      = None
     st.session_state.primary_valuation = None
     st.session_state.valuation_ticker  = None
+    st.session_state.peer1_confirmed   = None
+    st.session_state.peer1_matches     = []
+    st.session_state.peer2_confirmed   = None
+    st.session_state.peer2_matches     = []
 
     query = search_input.strip()
 
@@ -786,6 +885,17 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
     with st.spinner("Downloading 5 years of financial data from EDGAR..."):
         df = build_financials_dataframe(cik)
+
+    if df.empty:
+        st.error(
+            f"**No financial data found for {company_name} ({ticker}).**  \n"
+            "SEC EDGAR has this company in its index but returned no usable 10-K "
+            "financial statements. This usually means the company is a foreign private "
+            "issuer, a very recently listed company, or does not file standard US GAAP "
+            "10-K reports.  \n\nTry a major US-listed company such as **AAPL**, **MSFT**, "
+            "**JPM**, or **V**."
+        )
+        st.stop()
 
     ratios  = calculate_ratios(df)
     flags   = [flag_ratio(n, v) for n, v in ratios.items()]
@@ -878,22 +988,21 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
     # ── PEER COMPARISON ───────────────────────────────────────────────────────
     st.markdown('<div class="section-heading">Peer Comparison</div>', unsafe_allow_html=True)
-    st.caption("Enter up to 2 competitor tickers to compare all 6 ratios side-by-side.")
+    st.caption("Search by company name or ticker — same as the main search bar above.")
 
-    pcol1, pcol2 = st.columns(2)
-    with pcol1:
-        peer1_input = st.text_input("Peer 1 ticker", placeholder="e.g. MA",  key="peer1")
-    with pcol2:
-        peer2_input = st.text_input("Peer 2 ticker", placeholder="e.g. AXP", key="peer2")
+    render_peer_search_widget(1)
+    render_peer_search_widget(2)
+
+    peer1_confirmed = st.session_state.get("peer1_confirmed")
+    peer2_confirmed = st.session_state.get("peer2_confirmed")
 
     if st.button("Compare Peers →", type="secondary"):
-        # Collect whichever peer tickers the user actually filled in
-        peers_to_fetch = [t.strip().upper() for t in [peer1_input, peer2_input] if t.strip()]
+        confirmed_peers = [p for p in [peer1_confirmed, peer2_confirmed] if p]
 
-        if not peers_to_fetch:
-            st.warning("Enter at least one peer ticker above, then click Compare.")
+        if not confirmed_peers:
+            st.warning("Search and select at least one peer above, then click Compare.")
         else:
-            # Start with the primary company — reuse EDGAR ratios + cached valuation
+            # Primary company uses EDGAR ratios already calculated above
             companies = [{
                 "ticker":       ticker,
                 "company_name": company_name,
@@ -902,19 +1011,19 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
             }]
 
             with st.spinner("Fetching peer data from Yahoo Finance..."):
-                for peer_ticker in peers_to_fetch:
-                    peer_data = fetch_peer_ratios(peer_ticker)
+                for peer in confirmed_peers:
+                    peer_data = fetch_peer_ratios(peer["ticker"])
                     if peer_data:
-                        # Fetch valuation separately for each peer (same yfinance source)
-                        peer_data["valuation"] = fetch_valuation_metrics(peer_ticker)
+                        # Use the EDGAR company name (more accurate than yfinance longName)
+                        peer_data["company_name"] = peer["title"]
+                        peer_data["valuation"] = fetch_valuation_metrics(peer["ticker"])
                         companies.append(peer_data)
                     else:
                         st.warning(
-                            f"Could not fetch data for **{peer_ticker}** — "
-                            "check the ticker symbol and try again."
+                            f"Could not fetch ratio data for **{peer['title']} "
+                            f"({peer['ticker']})** from Yahoo Finance."
                         )
 
-            # Store in session_state so the table stays visible on Streamlit reruns
             st.session_state.peer_results = companies
 
     # Render the comparison table if we have stored results
