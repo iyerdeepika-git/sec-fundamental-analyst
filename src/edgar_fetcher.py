@@ -114,10 +114,14 @@ def search_companies_by_name(query, max_results=8):
     response = requests.get(url, headers=HEADERS)
     data = response.json()
 
-    query_lower = query.lower().strip()
+    query_lower   = query.lower().strip()
+    query_nospace = query_lower.replace(" ", "")   # "jp morgan" → "jpmorgan"
+
     matches = []
     for company in data.values():
-        if query_lower in company["title"].lower():
+        title_lower   = company["title"].lower()
+        title_nospace = title_lower.replace(" ", "")
+        if query_lower in title_lower or query_nospace in title_nospace:
             matches.append({
                 "ticker": company["ticker"],
                 "cik":    str(company["cik_str"]).zfill(10),
