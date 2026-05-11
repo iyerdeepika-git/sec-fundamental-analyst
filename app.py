@@ -794,6 +794,8 @@ if "peer1_confirmed"    not in st.session_state: st.session_state.peer1_confirme
 if "peer1_matches"      not in st.session_state: st.session_state.peer1_matches      = []
 if "peer2_confirmed"    not in st.session_state: st.session_state.peer2_confirmed    = None
 if "peer2_matches"      not in st.session_state: st.session_state.peer2_matches      = []
+if "financials_df"      not in st.session_state: st.session_state.financials_df      = None
+if "financials_cik"     not in st.session_state: st.session_state.financials_cik     = None
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
@@ -828,6 +830,8 @@ elif run:
     st.session_state.peer1_matches     = []
     st.session_state.peer2_confirmed   = None
     st.session_state.peer2_matches     = []
+    st.session_state.financials_df     = None
+    st.session_state.financials_cik    = None
 
     query = search_input.strip()
 
@@ -883,10 +887,15 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
     cik          = sel["cik"]
     company_name = sel["title"]
 
-    with st.spinner("Downloading 5 years of financial data from EDGAR..."):
-        df = build_financials_dataframe(cik)
+    if st.session_state.financials_cik != cik:
+        with st.spinner("Downloading 5 years of financial data from EDGAR..."):
+            df = build_financials_dataframe(cik)
+        st.session_state.financials_df  = df
+        st.session_state.financials_cik = cik
+    else:
+        df = st.session_state.financials_df
 
-    if df.empty:
+    if df is None or df.empty:
         st.error(
             f"**No financial data found for {company_name} ({ticker}).**  \n"
             "SEC EDGAR has this company in its index but returned no usable 10-K "
@@ -1010,19 +1019,34 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
                 "valuation":    st.session_state.primary_valuation,
             }]
 
-            with st.spinner("Fetching peer data from Yahoo Finance..."):
+            with st.spinner("Fetching peer data from SEC EDGAR and Yahoo Finance..."):
                 for peer in confirmed_peers:
-                    peer_data = fetch_peer_ratios(peer["ticker"])
-                    if peer_data:
-                        # Use the EDGAR company name (more accurate than yfinance longName)
-                        peer_data["company_name"] = peer["title"]
-                        peer_data["valuation"] = fetch_valuation_metrics(peer["ticker"])
-                        companies.append(peer_data)
+                    # Use EDGAR for fundamentals — reliable and consistent with
+                    # the primary company's data (same 10-K filing methodology)
+                    peer_df = build_financials_dataframe(peer["cik"])
+                    if not peer_df.empty:
+                        try:
+                            peer_ratios = calculate_ratios(peer_df)
+                        except (IndexError, KeyError):
+                            peer_ratios = {k: float("nan") for k in ratios}
+                        companies.append({
+                            "ticker":       peer["ticker"],
+                            "company_name": peer["title"],
+                            "ratios":       peer_ratios,
+                            "valuation":    fetch_valuation_metrics(peer["ticker"]),
+                        })
                     else:
-                        st.warning(
-                            f"Could not fetch ratio data for **{peer['title']} "
-                            f"({peer['ticker']})** from Yahoo Finance."
-                        )
+                        # Foreign or non-standard filer — fall back to yfinance
+                        peer_data = fetch_peer_ratios(peer["ticker"])
+                        if peer_data:
+                            peer_data["company_name"] = peer["title"]
+                            peer_data["valuation"] = fetch_valuation_metrics(peer["ticker"])
+                            companies.append(peer_data)
+                        else:
+                            st.warning(
+                                f"Could not fetch data for **{peer['title']} "
+                                f"({peer['ticker']})** — no EDGAR filings found."
+                            )
 
             st.session_state.peer_results = companies
 
