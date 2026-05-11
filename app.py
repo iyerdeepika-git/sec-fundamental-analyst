@@ -1037,13 +1037,18 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
             with st.spinner("Fetching peer data from SEC EDGAR and Yahoo Finance..."):
                 for peer in confirmed_peers:
-                    # Use EDGAR for fundamentals — reliable and consistent with
-                    # the primary company's data (same 10-K filing methodology)
-                    peer_df = build_financials_dataframe(peer["cik"])
+                    peer_added = False
+
+                    # ── Try EDGAR first (same pipeline as primary company) ──────
+                    try:
+                        peer_df = build_financials_dataframe(peer["cik"])
+                    except Exception:
+                        peer_df = pd.DataFrame()   # treat any network/parse error as "no data"
+
                     if not peer_df.empty:
                         try:
                             peer_ratios = calculate_ratios(peer_df)
-                        except (IndexError, KeyError):
+                        except Exception:
                             peer_ratios = {k: float("nan") for k in ratios}
                         companies.append({
                             "ticker":       peer["ticker"],
@@ -1051,18 +1056,22 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
                             "ratios":       peer_ratios,
                             "valuation":    fetch_valuation_metrics(peer["ticker"]),
                         })
-                    else:
-                        # Foreign or non-standard filer — fall back to yfinance
+                        peer_added = True
+
+                    # ── Fall back to yfinance if EDGAR had no data ─────────────
+                    if not peer_added:
                         peer_data = fetch_peer_ratios(peer["ticker"])
                         if peer_data:
                             peer_data["company_name"] = peer["title"]
-                            peer_data["valuation"] = fetch_valuation_metrics(peer["ticker"])
+                            peer_data["valuation"]    = fetch_valuation_metrics(peer["ticker"])
                             companies.append(peer_data)
-                        else:
-                            st.warning(
-                                f"Could not fetch data for **{peer['title']} "
-                                f"({peer['ticker']})** — no EDGAR filings found."
-                            )
+                            peer_added = True
+
+                    if not peer_added:
+                        st.warning(
+                            f"Could not fetch data for **{peer['title']} ({peer['ticker']})** "
+                            "from either SEC EDGAR or Yahoo Finance."
+                        )
 
             st.session_state.peer_results = companies
 
