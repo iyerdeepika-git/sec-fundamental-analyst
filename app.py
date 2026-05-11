@@ -996,12 +996,19 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
     # We cache the result so subsequent interactions (Compare, Clear, etc.)
     # don't burn Groq API quota or make the user wait through the stream again.
     with st.container(border=True):
-        if st.session_state.commentary_ticker != ticker:
+        # Re-generate if: different company, or cache is None/empty (st.write_stream
+        # can return None if the stream produces no output — treat that as a miss).
+        needs_generation = (
+            st.session_state.commentary_ticker != ticker
+            or not st.session_state.commentary_cache
+        )
+        if needs_generation:
             try:
                 result = st.write_stream(
                     stream_llama_commentary(company_name, ticker, ratios, df)
                 )
-                st.session_state.commentary_cache  = result
+                # Coerce None → "" so st.markdown never receives None
+                st.session_state.commentary_cache  = result or ""
                 st.session_state.commentary_ticker = ticker
             except Exception as e:
                 if "api_key" in str(e).lower() or "auth" in str(e).lower():
@@ -1009,7 +1016,7 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
                 else:
                     st.error(f"Groq error: {e}")
         else:
-            st.markdown(st.session_state.commentary_cache)
+            st.markdown(st.session_state.commentary_cache or "")
 
     # ── PEER COMPARISON ───────────────────────────────────────────────────────
     st.markdown('<div class="section-heading">Peer Comparison</div>', unsafe_allow_html=True)
