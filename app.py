@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 from groq import Groq
 from dotenv import load_dotenv
 
-from edgar_fetcher import get_company_cik, get_company_info, search_companies_by_name
+from edgar_fetcher import get_company_cik, get_company_info, search_companies_by_name, _load_company_tickers
 from financial_extractor import build_financials_dataframe
 from analyser import (
     calculate_ratios, flag_ratio, format_value,
@@ -331,7 +331,8 @@ def render_peer_search_widget(peer_num):
         st.session_state[f"{prefix}_confirmed"] = None
 
         with st.spinner(f"Searching EDGAR..."):
-            cik, title = get_company_info(query.strip().upper())
+            tickers_data = _load_company_tickers()
+            cik, title   = get_company_info(query.strip().upper(), _data=tickers_data)
 
         if cik:
             # Exact ticker match — confirm immediately, no dropdown needed
@@ -341,7 +342,7 @@ def render_peer_search_widget(peer_num):
                 "title":  title,
             }
         else:
-            matches = search_companies_by_name(query.strip())
+            matches = search_companies_by_name(query.strip(), _data=tickers_data)
             if not matches:
                 st.warning(
                     f"No companies found for **'{query.strip()}'**. "
@@ -796,6 +797,8 @@ if "peer2_confirmed"    not in st.session_state: st.session_state.peer2_confirme
 if "peer2_matches"      not in st.session_state: st.session_state.peer2_matches      = []
 if "financials_df"      not in st.session_state: st.session_state.financials_df      = None
 if "financials_cik"     not in st.session_state: st.session_state.financials_cik     = None
+if "commentary_cache"   not in st.session_state: st.session_state.commentary_cache   = None
+if "commentary_ticker"  not in st.session_state: st.session_state.commentary_ticker  = None
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
@@ -832,21 +835,24 @@ elif run:
     st.session_state.peer2_matches     = []
     st.session_state.financials_df     = None
     st.session_state.financials_cik    = None
+    st.session_state.commentary_cache  = None
+    st.session_state.commentary_ticker = None
 
     query = search_input.strip()
 
-    # Try as a ticker first — also fetch the full registered company name
+    # Download the SEC company index once, then reuse it for both ticker lookup
+    # and name search — avoids making two identical HTTP requests to EDGAR.
     with st.spinner("Searching SEC EDGAR..."):
-        cik, title = get_company_info(query.upper())
+        tickers_data = _load_company_tickers()
+        cik, title   = get_company_info(query.upper(), _data=tickers_data)
 
     if cik:
         # Exact ticker match — go straight to analysis, show full name not just ticker
         st.session_state.selected         = {"ticker": query.upper(), "cik": cik, "title": title}
         st.session_state.ready_to_analyse = True
     else:
-        # Search by name
-        with st.spinner(f"Searching for '{query}'..."):
-            matches = search_companies_by_name(query)
+        # Search by name — reuse the already-downloaded JSON (no second HTTP request)
+        matches = search_companies_by_name(query, _data=tickers_data)
 
         if not matches:
             st.error(
@@ -985,15 +991,25 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
             for g in gaps:
                 st.caption(f"• {g}")
 
-    # ── AI commentary (streamed) ───────────────────────────────────────────────
+    # ── AI commentary (streamed once, then cached) ────────────────────────────
+    # st.write_stream re-executes on every Streamlit rerun (every button click).
+    # We cache the result so subsequent interactions (Compare, Clear, etc.)
+    # don't burn Groq API quota or make the user wait through the stream again.
     with st.container(border=True):
-        try:
-            st.write_stream(stream_llama_commentary(company_name, ticker, ratios, df))
-        except Exception as e:
-            if "api_key" in str(e).lower() or "auth" in str(e).lower():
-                st.error("GROQ_API_KEY missing or invalid — check your .env file.")
-            else:
-                st.error(f"Groq error: {e}")
+        if st.session_state.commentary_ticker != ticker:
+            try:
+                result = st.write_stream(
+                    stream_llama_commentary(company_name, ticker, ratios, df)
+                )
+                st.session_state.commentary_cache  = result
+                st.session_state.commentary_ticker = ticker
+            except Exception as e:
+                if "api_key" in str(e).lower() or "auth" in str(e).lower():
+                    st.error("GROQ_API_KEY missing or invalid — check your .env file.")
+                else:
+                    st.error(f"Groq error: {e}")
+        else:
+            st.markdown(st.session_state.commentary_cache)
 
     # ── PEER COMPARISON ───────────────────────────────────────────────────────
     st.markdown('<div class="section-heading">Peer Comparison</div>', unsafe_allow_html=True)
@@ -1050,12 +1066,20 @@ if st.session_state.ready_to_analyse and st.session_state.selected:
 
             st.session_state.peer_results = companies
 
-    # Render the comparison table if we have stored results
-    if st.session_state.peer_results:
-        st.markdown(
-            render_peer_comparison_table(st.session_state.peer_results),
-            unsafe_allow_html=True,
-        )
+    # Render the comparison table — needs at least 2 companies to be meaningful
+    if st.session_state.peer_results is not None:
+        if len(st.session_state.peer_results) >= 2:
+            st.markdown(
+                render_peer_comparison_table(st.session_state.peer_results),
+                unsafe_allow_html=True,
+            )
+        else:
+            st.warning(
+                "Could not fetch peer financial data from SEC EDGAR. "
+                "This sometimes happens for very large financial conglomerates that use "
+                "non-standard GAAP tags. Try searching by ticker symbol directly "
+                "(e.g. **MS** for Morgan Stanley, **BAC** for Bank of America)."
+            )
 
     st.markdown(
         '<div class="app-footer">Data: SEC EDGAR (public API) &nbsp;·&nbsp; '

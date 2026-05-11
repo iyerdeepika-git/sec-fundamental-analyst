@@ -49,15 +49,22 @@ def get_company_cik(ticker):
     return None
 
 
-def get_company_info(ticker):
+def _load_company_tickers():
+    """Download the SEC company ticker index (called at most once per search)."""
+    url = "https://www.sec.gov/files/company_tickers.json"
+    return requests.get(url, headers=HEADERS).json()
+
+
+def get_company_info(ticker, _data=None):
     """
-    Like get_company_cik() but also returns the company's full registered name.
+    Look up a company by exact ticker symbol.
     Returns a (cik, title) tuple, e.g. ("0001403161", "VISA INC.").
     Returns (None, None) if the ticker isn't found.
+
+    Pass _data if you already have the company_tickers JSON loaded
+    (avoids a redundant HTTP request when used alongside a name search).
     """
-    url      = "https://www.sec.gov/files/company_tickers.json"
-    response = requests.get(url, headers=HEADERS)
-    data     = response.json()
+    data = _data if _data is not None else _load_company_tickers()
     for company in data.values():
         if company["ticker"].upper() == ticker.upper():
             cik = str(company["cik_str"]).zfill(10)
@@ -102,17 +109,14 @@ def get_recent_10k(cik):
     return None
 
 
-def search_companies_by_name(query, max_results=8):
+def search_companies_by_name(query, max_results=8, _data=None):
     """
     Search the SEC company list by company name (not ticker).
     Returns a list of dicts: [{"ticker": "MA", "cik": "...", "title": "Mastercard Inc"}, ...]
 
-    Why this works: the same JSON file we use for ticker lookup also has every
-    company's full name in the "title" field. We just search that field instead.
+    Pass _data if you already have the company_tickers JSON (avoids a second download).
     """
-    url = "https://www.sec.gov/files/company_tickers.json"
-    response = requests.get(url, headers=HEADERS)
-    data = response.json()
+    data = _data if _data is not None else _load_company_tickers()
 
     query_lower   = query.lower().strip()
     query_nospace = query_lower.replace(" ", "")   # "jp morgan" → "jpmorgan"
