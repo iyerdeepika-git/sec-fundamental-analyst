@@ -115,7 +115,7 @@ st.markdown("""
         SEC Fundamental Analyst
     </h1>
     <p style="color:#666; font-size:0.9rem; margin:6px 0 0 0;">
-        Real financial data from SEC EDGAR · AI commentary by Llama 3.1 · Free to use
+        Instant fundamental analysis from official SEC filings — ratios, trends, and AI insights in seconds.
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -799,11 +799,16 @@ if "financials_df"      not in st.session_state: st.session_state.financials_df 
 if "financials_cik"     not in st.session_state: st.session_state.financials_cik     = None
 if "commentary_cache"   not in st.session_state: st.session_state.commentary_cache   = None
 if "commentary_ticker"  not in st.session_state: st.session_state.commentary_ticker  = None
+if "run_quick_search"   not in st.session_state: st.session_state.run_quick_search   = False
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
 
-st.markdown('<div class="section-heading">Search</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="section-heading" style="text-transform:none; letter-spacing:normal; font-size:1.05rem;">'
+    'Analyse a company — enter a ticker or name</div>',
+    unsafe_allow_html=True,
+)
 
 col_search, col_btn = st.columns([4, 1], gap="small")
 with col_search:
@@ -811,12 +816,109 @@ with col_search:
         "Ticker or company name",
         placeholder="e.g.  V  or  Mastercard  or  Apple Inc.",
         label_visibility="collapsed",
+        key="search_input_value",
     )
 with col_btn:
     run = st.button("Analyse", type="primary", use_container_width=True)
 
+# ── LANDING PAGE EXTRAS (hidden once analysis is running) ─────────────────────
+# `not st.session_state.ready_to_analyse` is True only on the blank landing page —
+# before the user has confirmed a company. Once analysis runs, all of this disappears.
+
+if not st.session_state.ready_to_analyse:
+
+    # ── Change 3: Quick example buttons ───────────────────────────────────────
+    # st.columns([1,1,1,3]) creates 4 columns with those relative widths —
+    # the 3 buttons take the left portion, the wide empty column is padding.
+    st.caption("Quick examples — click to run instantly:")
+    qc1, qc2, qc3, _ = st.columns([1, 1, 1, 3])
+
+    # Each button does three things: writes the ticker into the text box's
+    # session_state key, raises the run_quick_search flag, then calls st.rerun()
+    # so Streamlit immediately re-runs the script with those values in place.
+    with qc1:
+        if st.button("Try Visa (V)", use_container_width=True):
+            st.session_state.search_input_value = "V"
+            st.session_state.run_quick_search   = True
+            st.rerun()
+    with qc2:
+        if st.button("Try NVIDIA (NVDA)", use_container_width=True):
+            st.session_state.search_input_value = "NVDA"
+            st.session_state.run_quick_search   = True
+            st.rerun()
+    with qc3:
+        if st.button("Try Apple (AAPL)", use_container_width=True):
+            st.session_state.search_input_value = "AAPL"
+            st.session_state.run_quick_search   = True
+            st.rerun()
+
+    # ── Change 4: Credibility banner ──────────────────────────────────────────
+    # st.info() gives a big blue alert box — too loud for a trust signal.
+    # A custom markdown div lets us keep it small, grey, and unobtrusive.
+    st.markdown(
+        "<div style='margin-top:14px; padding:10px 16px; background:#f5f5f5; "
+        "border-radius:4px; color:#666; font-size:0.82rem;'>"
+        "&#128274;&nbsp; Data sourced directly from <strong>SEC EDGAR</strong> — "
+        "the official US regulatory database required by law for all public companies."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Change 5: How it works ─────────────────────────────────────────────────
+    # st.columns(3) divides the page into 3 equal-width vertical panels —
+    # like splitting a room into three sections with imaginary walls.
+    # Each `with col:` block puts its content inside that section.
+    st.markdown("<div style='margin-top:32px;'>", unsafe_allow_html=True)
+    st.markdown(
+        "<p style='color:#9e9e9e; font-size:0.78rem; font-weight:700; "
+        "text-transform:uppercase; letter-spacing:0.08em; margin-bottom:12px;'>"
+        "How it works</p>",
+        unsafe_allow_html=True,
+    )
+
+    hw1, hw2, hw3 = st.columns(3, gap="medium")
+    card_style = (
+        "background:#fafafa; border:1px solid #e0e0e0; border-radius:8px; "
+        "padding:20px 18px; height:130px;"
+    )
+    with hw1:
+        st.markdown(
+            f"<div style='{card_style}'>"
+            "<div style='font-size:1.4rem; margin-bottom:8px;'>🔍</div>"
+            "<div style='font-weight:700; font-size:0.88rem; color:#1a237e; margin-bottom:6px;'>Step 1 — Search</div>"
+            "<div style='font-size:0.82rem; color:#666;'>Enter any US stock ticker (V) or company name (Visa Inc.).</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with hw2:
+        st.markdown(
+            f"<div style='{card_style}'>"
+            "<div style='font-size:1.4rem; margin-bottom:8px;'>📄</div>"
+            "<div style='font-weight:700; font-size:0.88rem; color:#1a237e; margin-bottom:6px;'>Step 2 — Fetch</div>"
+            "<div style='font-size:0.82rem; color:#666;'>We pull the latest 10-K annual filing directly from SEC EDGAR.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with hw3:
+        st.markdown(
+            f"<div style='{card_style}'>"
+            "<div style='font-size:1.4rem; margin-bottom:8px;'>📊</div>"
+            "<div style='font-weight:700; font-size:0.88rem; color:#1a237e; margin-bottom:6px;'>Step 3 — Analyse</div>"
+            "<div style='font-size:0.82rem; color:#666;'>Get instant ratios, 5-year trends, and AI-powered commentary.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
 
 # ── SEARCH LOGIC ──────────────────────────────────────────────────────────────
+
+# Quick-example buttons set this flag and call st.rerun(). On the next rerun,
+# the Analyse button hasn't been clicked (run=False), so we promote the flag
+# to run=True here before any of the guard checks below.
+if st.session_state.get("run_quick_search"):
+    run = True
+    st.session_state.run_quick_search = False
 
 if run and not search_input.strip():
     st.warning("Type a ticker symbol (e.g. AAPL) or a company name (e.g. Apple).")
