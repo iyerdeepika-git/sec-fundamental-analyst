@@ -799,10 +799,18 @@ if "financials_df"      not in st.session_state: st.session_state.financials_df 
 if "financials_cik"     not in st.session_state: st.session_state.financials_cik     = None
 if "commentary_cache"   not in st.session_state: st.session_state.commentary_cache   = None
 if "commentary_ticker"  not in st.session_state: st.session_state.commentary_ticker  = None
-if "run_quick_search"   not in st.session_state: st.session_state.run_quick_search   = False
+if "run_quick_search"    not in st.session_state: st.session_state.run_quick_search    = False
+if "search_input_prefill" not in st.session_state: st.session_state.search_input_prefill = ""
 
 
 # ── SEARCH INPUT ──────────────────────────────────────────────────────────────
+
+# If a quick-example button was clicked, copy the prefill value into the
+# widget key NOW — before the text_input widget is rendered. Streamlit forbids
+# setting a widget's key after the widget has been drawn, so this must happen here.
+if st.session_state.search_input_prefill:
+    st.session_state.search_input_value     = st.session_state.search_input_prefill
+    st.session_state.search_input_prefill   = ""
 
 st.markdown(
     '<div class="section-heading" style="text-transform:none; letter-spacing:normal; font-size:1.05rem;">'
@@ -838,18 +846,18 @@ if not st.session_state.ready_to_analyse:
     # so Streamlit immediately re-runs the script with those values in place.
     with qc1:
         if st.button("Try Visa (V)", use_container_width=True):
-            st.session_state.search_input_value = "V"
-            st.session_state.run_quick_search   = True
+            st.session_state.search_input_prefill = "V"
+            st.session_state.run_quick_search     = True
             st.rerun()
     with qc2:
         if st.button("Try NVIDIA (NVDA)", use_container_width=True):
-            st.session_state.search_input_value = "NVDA"
-            st.session_state.run_quick_search   = True
+            st.session_state.search_input_prefill = "NVDA"
+            st.session_state.run_quick_search     = True
             st.rerun()
     with qc3:
         if st.button("Try Apple (AAPL)", use_container_width=True):
-            st.session_state.search_input_value = "AAPL"
-            st.session_state.run_quick_search   = True
+            st.session_state.search_input_prefill = "AAPL"
+            st.session_state.run_quick_search     = True
             st.rerun()
 
     # ── Change 4: Credibility banner ──────────────────────────────────────────
