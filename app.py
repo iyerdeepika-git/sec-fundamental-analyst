@@ -570,10 +570,28 @@ def render_peer_comparison_table(companies):
 
 def show_revenue_chart(df):
     """Bar chart of 5-year revenue, oldest year on the left."""
-    chart_df = df[["revenue"]].copy()
-    chart_df["revenue"] = (chart_df["revenue"] / 1e9).round(2)
-    chart_df.columns = ["Revenue (USD billions)"]
-    st.bar_chart(chart_df.sort_index())
+    chart_df = df[["revenue"]].copy().sort_index()
+    years   = chart_df.index.tolist()
+    revenue = (chart_df["revenue"] / 1e9).round(2).tolist()
+
+    fig = go.Figure(go.Bar(
+        x = years,
+        y = revenue,
+        marker_color = "#1565c0",
+        hovertemplate = "<b>%{x}</b><br>Revenue: $%{y:.1f}B<extra></extra>",
+    ))
+    fig.update_layout(
+        xaxis = dict(tickfont=dict(size=12), showgrid=False),
+        yaxis = dict(title="USD (billions)", tickfont=dict(size=12),
+                     showgrid=True, gridcolor="#f0f0f0"),
+        plot_bgcolor  = "#ffffff",
+        paper_bgcolor = "#ffffff",
+        margin  = dict(l=50, r=20, t=20, b=50),
+        height  = 360,
+        hovermode = "x",
+    )
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"scrollZoom": False, "displayModeBar": False})
 
 
 def show_margin_trend_chart(df):
@@ -664,9 +682,8 @@ def show_margin_trend_chart(df):
         height    = 360,
     )
 
-    # st.plotly_chart renders the interactive chart directly into the Streamlit page.
-    # use_container_width=True makes it stretch to fill the available column width.
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"scrollZoom": False, "displayModeBar": False})
 
 
 # ── LLM HELPERS ───────────────────────────────────────────────────────────────
