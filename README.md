@@ -70,12 +70,9 @@ The app will open in your browser at `http://localhost:8501`.
 
 ---
 
-## Screenshots / Demo
-
-> 📸 Screenshots coming soon.
-
+## Demo
 To try it yourself:
-1. Run the app locally (see above)
+1. Run the app locally 
 2. Enter a US stock ticker (e.g. `AAPL`, `MSFT`, `V`, `NVDA`)
 3. The app fetches the latest 10-K filing and generates a full analysis
 
